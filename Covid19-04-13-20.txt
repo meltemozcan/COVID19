@@ -1,0 +1,59 @@
+﻿County,Total cases,Deaths,Population
+Los Angeles,9420,320,10039108
+San Diego,1847,47,3337685
+Riverside,1751,50,2423266
+Santa Clara,1666,60,1938153
+Orange,1283,19,3190400
+San Bernardino,977,31,2157404
+San Francisco,957,15,884363
+Alameda,886,23,1663190
+Sacramento,739,27,1530615
+San Mateo,701,21,771410
+Contra Costa,552,11,1147439
+Kern,446,3,893119
+Ventura,317,10,854223
+San Joaquin,309,17,745424
+Santa Barbara,284,2,448150
+Tulare,264,13,464493
+Fresno,222,5,989255
+Marin,170,10,260955
+Sonoma,147,2,504217
+Stanislaus,146,2,547899
+Solano,135,2,445458
+Placer,127,5,386166
+San Luis Obispo,117,1,283405
+Yolo,101,4,219116
+Imperial,100,3,182830
+Santa Cruz,91,1,275897
+Monterey,87,3,437907
+Merced,69,3,272673
+Humboldt,50,0,136754
+San Benito,38,2,60317
+El Dorado,34,0,188987
+Napa,34,2,140973
+Nevada,34,1,99814
+Madera,33,2,156890
+Shasta,25,3,179921
+Mono,23,1,14168
+Sutter,22,2,96648
+Yuba,15,1,77031
+Butte,15,0,229294
+Inyo,12,0,18026
+Kings,12,1,150101
+Calaveras,9,0,45670
+Amador,7,0,38626
+Siskiyou,5,0,43853
+Glenn,4,0,28094
+Lake,4,0,64246
+Mendocino,4,0,88018
+Plumas,4,0,18742
+Colusa,3,0,21805
+Del Norte,2,0,27470
+Alpine,1,0,11200
+Tehama,1,0,63926
+Tuolumne,1,0,54248
+Lassen,0,0,31185
+Mariposa,0,0,17540
+Modoc,0,0,8934
+Sierra,0,0,2930
+Trinity,0,0,12862
