@@ -1,0 +1,832 @@
+---
+title: "COVID19_3"
+author: "Meltem Ozcan"
+date: "6/2/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(mcmc);library(dplyr);library(RColorBrewer);library(LearnBayes)
+library(kableExtra);library(MASS);library(monomvn); library(lars); 
+library(glmnet); library(miscTools) 
+#library(plotrix)  # for drawing circles
+```
+
+```{r}
+set.seed(87)
+covid = read.delim('Covid19.txt', sep=',')
+covid %>% glimpse()
+#table(covid$Group)
+#table(covid$Region)
+```
+
+1. Consider the ten census regions and group the counties into five regions using the following grouping: Group 1, counties in regions 1 and 2; Group 2, counties in region 3; Group 3, counties in region 5; Group 4, counties in regions 4 and 6; Group 5, counties in regions 7,8,9, and 10.
+
+2. Let $y_{ij} = log n_{ij}$ where $n_{ij}$ is the number of cases, and let $c_{ij}$ the population, for the i-th county in the j-th region. Perform an exploratory data analysis involving $y_{ij}$ , the five different groups, the population, and the population density. Discuss possible associations and clusters.
+```{r}
+covid["lncases"]=log(covid$Total.cases)
+covid["lpop"]=log(covid$Population)
+covid["ldensity"]=log(covid$Density)
+
+covid["abbr"]=c("LA","SD", "RIV","SCL" , "ORA","SBD","SF","ALA" ,"SAC","SM" , "COS", "KER",  
+"VEN", "SJ","SB", "TUL", "FRE", "MRN" ,"SON" ,  "STA",
+"SOL" , "PLA" ,"SLO" ,"YOL" ,   "IMP" , "SCR" ,"MON", "MER" , 
+"HUM" , "SBT" ,  "ED","NAP","NEV", "MAD" ,"SHA" ,  "MON",       
+"SUT" , "YUB"  , "BUT" ,"INY","KIN"  ,"CAL",   "AMA" , "SIS",   
+"GLE"  ,"LK" , "MEN"  ,"PLU","COL"  , "DN", "ALP" , "TEH",     
+"TUO" , "LAS" , "MPA" , "MOD","SIE"  , "TRI")
+
+covid[covid$lncases=="-Inf",]$lncases=0
+
+cols=c("red2","goldenrod2","palegreen3","cornflowerblue","darkorchid1")
+myColors=rep(NA, 58)
+myColors[which(covid$Group=="1")]="red2"
+myColors[which(covid$Group=="2")]="goldenrod2"
+myColors[which(covid$Group=="3")]="palegreen3"
+myColors[which(covid$Group=="4")]="cornflowerblue"
+myColors[which(covid$Group=="5")]="darkorchid1"
+```
+
+#EDA PLOTS
+```{r}
+par(las=2)
+plot(covid$lncases, xlab="County", cex=0.6, bty="n",col=myColors, pch=16, 
+     ylab="Log total cases",main="Log total cases by group and county", xaxt="n")
+legend("topright",fill=cols, legend=c("Group 1","Group 2", "Group 3", "Group 4", "Group 5"))
+axis(1, at=1:58, labels=covid$abbr,cex.axis=0.5, font=2)
+
+par(mfrow=c(1,2),las=2)
+plot(x=covid$ldensity,y=covid$lncases, xlab="Log density",
+     ylab="Log total cases", col=myColors, pch=16,  main="Log n_ij vs log d_ij by group")
+legend("topleft",fill=cols, legend=c("Group 1","Group 2", "Group 3", "Group 4", "Group 5"), cex=0.6, bty="n")
+
+#G1=tapply(covid$lpop, covid$Group, mean)
+plot(x=covid$lpop,y=covid$lncases, xlab="Log population",
+     ylab="Log total cases", col=myColors,pch=16,  main="Log n_ij vs log c_ij by group")
+legend("topleft",fill=cols, legend=c("Group 1","Group 2", "Group 3", "Group 4", "Group 5"), cex=0.6, bty="n")
+
+#for(i in 1:length(G1)){draw.circle(G1[i], G2[i], 1, border=cols[i],lty=2,lwd=0.9)}
+```
+
+```{r}
+#some table stuff
+a=covid%>% group_by(Group)%>%summarise_at(vars(lncases),funs(mean,sd))
+b2=covid%>%group_by(Group)%>%summarise_at(vars(ldensity),funs(mean,sd))
+
+t1=as.data.frame(cbind(round(a[2:3],2),round(b2[2:3],2)))
+t2=t(t1) %>% kable(col.names = c("Group 1", "Group 2","Group 3", "Group 4", "Group 5"))%>%
+                kable_styling(bootstrap_options = c("striped"), latex_options = "hold_position")
+```
+
+
+############################################################################
+MODELS
+
+3. Consider, fit and assess the following models, using a Bayesian approach with priors based on your best judgement:
+$$y_{ij} = \mu + \epsilon_{ij}$$
+$$y_{ij} = \mu + \beta d_{ij} +  \epsilon_{ij}$$
+where $d_{ij}$ is the population density of the ith county in the jth group;
+$$y_{ij} = \mu +\eta_j + \epsilon_{ij}$$
+where $\eta_j$ is a group effect
+$$y_{ij} = \mu + \eta_j + dij +  \epsilon_{ij}$$
+In all cases
+$$\epsilon_{ij} \sim N(0, \sigma^2\sqrt{10^3/c_{ij}})$$
+
+
+MODEL 1:
+```{r}
+V1=diag(1000/covid$Population) 
+Linv=diag(sqrt(covid$Population/1000))
+
+X1 = matrix(rep(1,58))
+n1=nrow(X1)
+k1=ncol(X1)
+y1=matrix(covid$lncases,n1,1)
+
+z1=Linv%*%y1
+w1=Linv%*%X1
+#qr decomposition
+qr1=qr(w1)
+
+#check for posterior propriety
+stopifnot(n1>k1, qr1$rank==k1)
+
+#calculate posterior hyperparameters
+Rinv1=solve(qr.R(qr1))#qr.r extracts the upper triangular matrix
+vbeta1=Rinv1%*%t(Rinv1)
+betahat1=qr.solve(qr1,z1)
+
+df1=n1-k1
+e1=qr.resid(qr1,z1)
+sig1=sum(e1^2)/df1
+
+#simulate from posterior
+niter=1000
+sigma1=sqrt(1/rgamma(niter,df1/2,df1*sig1/2))
+beta1=matrix(betahat1,niter,k1, byrow=T)+sigma1*mvrnorm(niter, rep(0,k1),vbeta1)
+
+
+colMeans(beta1)
+betahat1
+```
+
+
+```{r}
+#plot beta estimates
+par(las=2)
+par(mfrow=c(1,2))
+hist(sigma1,100, freq=F, main="Standard deviation", xlab=expression(sigma), col="lightblue", lty="blank")
+hist(beta1[,1],100, freq=F, main="Intercept", xlab=expression(mu), col="lightpink", lty="blank", ylim=c(0,2.5) )
+```
+
+
+MODEL 2
+```{r}
+X2=cbind(1, covid$ldensity)
+n2=nrow(X2)
+k2=ncol(X2)
+y2=matrix(covid$lncases,n2,1)
+
+z2=Linv%*%y2
+w2=Linv%*%X2
+#qr decomposition
+qr2=qr(w2)
+
+#check for posterior propriety
+stopifnot(n2>k2, qr2$rank==k2)
+
+#calculate posterior hyperparameters
+Rinv2=solve(qr.R(qr2))#qr.r extracts the upper triangular matrix
+vbeta2=Rinv2%*%t(Rinv2)
+betahat2=qr.solve(qr2,z2)
+df2=n2-k2
+e2=qr.resid(qr2,z2)
+sig2=sum(e2^2)/df2
+
+#simulate from posterior
+niter=1000
+sigma2=sqrt(1/rgamma(niter,df2/2,df2*sig2/2))
+beta2=matrix(betahat2,niter,k2, byrow=T)+sigma2*mvrnorm(niter, rep(0,k2),vbeta2)
+
+colMeans(beta2)
+betahat2
+```
+
+```{r}
+#plot parameter estimates m2
+par(las=2)
+par(mfrow=c(1,3))
+hist(sigma2,100, freq=F, main="Standard deviation", xlab=expression(sigma), col="lightblue", lty="blank",ylim=c(0,0.2))
+hist(beta2[,1],100, freq=F, main="Intercept", xlab=expression(mu), col="lightpink", lty="blank", ylim=c(0,0.6))
+hist(beta2[,2],100, freq=F, main="Beta posterior draws", xlab=expression(beta), col="lightgreen", lty="blank", cex.axis=0.9,ylim=c(0,5))
+```
+
+
+
+MODEL 3
+
+
+```{r}
+eta5=model.matrix(~-1+as.factor(Group),covid)
+eta5[eta5[,5]==1,]=rep(-1,5)
+eta5=cbind(1,eta5[,1:4])
+X3=eta5
+#X3 = cbind(1, covid$Group)
+n3=nrow(X3)
+k3=ncol(X3)
+y3=matrix(covid$lncases,n3,1)
+
+z3=Linv%*%y3
+w3=Linv%*%X3
+#qr decomposition
+qr3=qr(w3)
+
+#check for posterior propriety
+stopifnot(n3>k3, qr3$rank==k3)
+
+#calculate posterior hyperparameters
+Rinv3=solve(qr.R(qr3))#qr.r extracts the upper triangular matrix
+vbeta3=Rinv3%*%t(Rinv3)
+betahat3=qr.solve(qr3,z3)
+df3=n3-k3
+e3=qr.resid(qr3,z3)
+sig3=sum(e3^2)/df3
+
+#simulate from posterior
+niter=1000
+sigma3=sqrt(1/rgamma(niter,df3/2,df3*sig3/2))
+beta3=matrix(betahat3,niter,k3, byrow=T)+sigma3*mvrnorm(niter, rep(0,k3),vbeta3)
+#apply(beta3,2,quantile,c(0.05,0.5,0.95))
+colMeans(beta3)
+betahat3
+```
+
+```{r}
+#plot parameter estimates m3
+par(las=2,mfrow=c(1,2))
+hist(sigma3,100, freq=F, main="Standard deviation", xlab=expression(sigma), col="lightblue", lty="blank")
+hist(beta3[,1],100, freq=F, main="Intercept", xlab=expression(mu), col="lightpink", lty="blank" )
+
+par(mfrow=c(1,5),las=2,mar=c(4,2,1.2,0))
+hist(beta3[,2],100, freq=F, main="Eta 1 draws", xlab=expression(eta_1), col="red2", lty="blank", cex.axis=0.9)
+hist(beta3[,3],100, freq=F, main="Eta 2 draws", xlab=expression(eta_2), col="goldenrod2", lty="blank", cex.axis=0.9)
+hist(beta3[,4],100, freq=F, main="Eta 3 draws", xlab=expression(eta_3), col="palegreen3", lty="blank", cex.axis=0.9)
+hist(beta3[,5],100, freq=F, main="Eta 4 draws", xlab=expression(eta_4), col="cornflowerblue", lty="blank", cex.axis=0.9)
+hist(-(beta3[,2]+beta3[,3]+beta3[,4]+beta3[,5]),100, freq=F, main="Eta 5 draws", xlab=expression(eta_5), col="darkorchid1", lty="blank", cex.axis=0.9)
+```
+
+
+MODEL 4
+
+```{r}
+X4=cbind(X3,covid$ldensity)
+n4=nrow(X4)
+k4=ncol(X4)
+y4=matrix(covid$lncases,n4,1)
+
+z4=Linv%*%y4
+w4=Linv%*%X4
+#qr decomposition
+qr4=qr(w4)
+
+#check for posterior propriety
+stopifnot(n4>k4, qr4$rank==k4)
+
+#calculate posterior hyperparameters
+Rinv4=solve(qr.R(qr4))#qr.r extracts the upper triangular matrix
+vbeta4=Rinv4%*%t(Rinv4)
+betahat4=qr.solve(qr4,z4)
+df4=n4-k4
+e4=qr.resid(qr4,z4)
+sig4=sum(e4^2)/df4
+
+#simulate from posterior
+niter=1000
+sigma4=sqrt(1/rgamma(niter,df4/2,df4*sig4/2))
+beta4=matrix(betahat4,niter,k4, byrow=T)+sigma4*mvrnorm(niter, rep(0,k4),vbeta4)
+
+
+betahat4
+colMeans(beta4)
+```
+
+```{r}
+par(las=2)
+par(mfrow=c(1,3))
+hist(sigma4,100, freq=F, main="Standard deviation", xlab=expression(sigma), col="lightblue", lty="blank")
+hist(beta4[,1],100, freq=F, main="Intercept", xlab=expression(mu), col="lightpink", lty="blank")
+hist(beta4[,6],100, freq=F, main="Beta draws", xlab=expression(beta), col="lightgreen", lty="blank", cex.axis=0.9)
+
+par(mfrow=c(1,5),mar=c(4,2,1.2,0),las=2)
+hist(beta4[,2],100, freq=F, main="Eta 1 draws", xlab=expression(eta_1), col="red2", lty="blank", cex.axis=0.9)
+hist(beta4[,3],100, freq=F, main="Eta 2 draws", xlab=expression(eta_2), col="goldenrod2", lty="blank", cex.axis=0.9)
+hist(beta4[,4],100, freq=F, main="Eta 3 draws", xlab=expression(eta_3), col="palegreen3", lty="blank", cex.axis=0.9)
+hist(beta4[,5],100, freq=F, main="Eta 4 draws", xlab=expression(eta_4), col="cornflowerblue", lty="blank", cex.axis=0.9)
+hist(-(beta4[,2]+beta4[,3]+beta4[,4]+beta4[,5]),100, freq=F, main="Eta 5 draws", xlab=expression(eta_5), col="darkorchid1", lty="blank", cex.axis=0.9)
+```
+
+
+
+################################################################################################
+FUNCTIONS 
+
+```{r}
+#Predict using model 1
+model1=function(i,j,it){
+    yij=beta1[it,1]+rnorm(1,0,sigma1*sqrt(1000/covid$Population[i]))
+  return(yij)}
+
+SAC_m1=model1(9,1)
+SCL_m1=model1(4,2)
+VEN_m1=model1(13,3)
+SJ_m1=model1(14,4)
+LA_m1=model1(1,5)
+m1logpreds=round(c(SAC_m1,SCL_m1,VEN_m1,SJ_m1,LA_m1),2)
+m1preds=as.integer(exp(c(SAC_m1,SCL_m1,VEN_m1,SJ_m1,LA_m1)))
+actual=c(covid$Total.cases[9],covid$Total.cases[4],covid$Total.cases[13],covid$Total.cases[14],covid$Total.cases[1])
+actuallog=round(c(covid$lncases[9],covid$lncases[4],covid$lncases[13],covid$lncases[14],covid$lncases[1]),2)
+
+tm1=as.data.frame(cbind(c("SAC", "SCL","VEN", "SJ","LA"),actuallog,m1logpreds,actual,m1preds))
+tm1 %>% kable(col.names = c("County","Log total cases", "M1 prediction (log)","Total cases", "M1 prediction"))%>%kable_styling(position="center",bootstrap_options = c("striped"), latex_options = "hold_position")
+```
+
+```{r}
+#Predict using model 2
+model2=function(i,j,it){
+    yij=beta2[it,1]+ beta2[it,2]*covid$ldensity[i]+rnorm(1,0,sigma2*sqrt(1000/covid$Population[i]))
+  return(yij)}
+
+SAC_m2=model2(9,1)
+SCL_m2=model2(4,2)
+VEN_m2=model2(13,3)
+SJ_m2=model2(14,4)
+LA_m2=model2(1,5)
+m2logpreds=round(c(SAC_m2,SCL_m2,VEN_m2,SJ_m2,LA_m2),2)
+m2preds=as.integer(exp(c(SAC_m2,SCL_m2,VEN_m2,SJ_m2,LA_m2)))
+
+tm2=as.data.frame(cbind(c("SAC", "SCL","VEN", "SJ","LA"),actuallog,m2logpreds,actual,m2preds))
+tm2 %>% kable(col.names = c("County","Log total cases", "M2 prediction (log)","Total cases", "M2 prediction"))%>% kable_styling(position="center",bootstrap_options = c("striped"), latex_options = "hold_position")
+```
+
+```{r}
+#Predict using model 3
+model3=function(i,j,it){
+  if(j==1){
+    eta1=1
+    eta2=0
+    eta3=0
+    eta4=0}
+    if(j==2){
+    eta1=0
+    eta2=1
+    eta3=0
+    eta4=0}
+    if(j==3){
+    eta1=0
+    eta2=0
+    eta3=1
+    eta4=0}  
+  if(j==4){
+    eta1=0
+    eta2=0
+    eta3=0
+    eta4=1}
+    if(j==5){
+    eta1=-1
+    eta2=-1
+    eta3=-1
+    eta4=-1}
+    yij=beta3[it,1]+ beta3[it,2]*eta1+ beta3[it,3]*eta2+beta3[it,4]*eta3+beta3[it,5]*eta4+rnorm(1,0,sigma3*sqrt(1000/covid$Population[i]))
+  return(yij)}
+
+SAC_m3=model3(9,1)
+SCL_m3=model3(4,2)
+VEN_m3=model3(13,3)
+SJ_m3=model3(14,4)
+LA_m3=model3(1,5)
+m3logpreds=round(c(SAC_m3,SCL_m3,VEN_m3,SJ_m3,LA_m3),2)
+m3preds=as.integer(exp(c(SAC_m3,SCL_m3,VEN_m3,SJ_m3,LA_m3)))
+
+tm3=as.data.frame(cbind(c("SAC", "SCL","VEN", "SJ","LA"),actuallog,m3logpreds,actual,m3preds))
+tm3 %>% kable(col.names = c("County","Log total cases", "M3 prediction (log)","Total cases", "M3 prediction"))%>% kable_styling(position="center",bootstrap_options = c("striped"), latex_options = "hold_position")
+```
+
+```{r}
+#Predict using model 4
+model4=function(i,j,it){
+  if(j==1){
+    eta1=1
+    eta2=0
+    eta3=0
+    eta4=0}
+    if(j==2){
+    eta1=0
+    eta2=1
+    eta3=0
+    eta4=0}
+    if(j==3){
+    eta1=0
+    eta2=0
+    eta3=1
+    eta4=0}  
+  if(j==4){
+    eta1=0
+    eta2=0
+    eta3=0
+    eta4=1}
+    if(j==5){
+    eta1=-1
+    eta2=-1
+    eta3=-1
+    eta4=-1}
+    yij=beta4[it,1]+beta4[it,2]*eta1+beta4[it,3]*eta2+beta4[it,4]*eta3+beta4[it,5]*eta4+ beta4[it,6]*covid$ldensity[i]+rnorm(1,0,sigma4[it]*sqrt(1000/covid$Population[i]))
+  return(yij)}
+beta4
+SAC_m4=model4(9,1)
+SCL_m4=model4(4,2)
+VEN_m4=model4(13,3)
+SJ_m4=model4(14,4)
+LA_m4=model4(1,5)
+m4logpreds=round(c(SAC_m4,SCL_m4,VEN_m4,SJ_m4,LA_m4),2)
+m4preds=as.integer(exp(c(SAC_m4,SCL_m4,VEN_m4,SJ_m4,LA_m4)))
+
+tm4=as.data.frame(cbind(c("SAC", "SCL","VEN", "SJ","LA"),actuallog,m4logpreds,actual,m4preds))
+tm4 %>% kable(col.names = c("County","Log total cases", "M4 prediction (log)","Total cases", "M4 prediction"))%>% kable_styling(position="center",bootstrap_options = c("striped"), latex_options = "hold_position")
+```
+
+######################################################################################
+
+SIMULATIONS
+
+```{r}
+niter=1000
+M1PREDS=matrix(NA, 58, niter)
+M2PREDS=matrix(NA, 58, niter)
+M3PREDS=matrix(NA, 58, niter)
+M4PREDS=matrix(NA, 58, niter)
+for(i in 1:niter){
+  for(j in 1:58){
+  M1PREDS[j,i]=model1(j, covid$Group[j],i)
+  M2PREDS[j,i]=model2(j, covid$Group[j],i)
+  M3PREDS[j,i]=model3(j, covid$Group[j],i)
+  M4PREDS[j,i]=model4(j, covid$Group[j],i)}}
+```
+
+```{r}
+#plot histograms for six counties using the four models
+par(mfrow=c(1,4))
+hist(M1PREDS[9,], main="", lty="blank", col="salmon", xlab="M1 predictions")
+abline(v=covid$lncases[9], col="red", lwd=1.5)
+hist(M2PREDS[9,], lty="blank",main="", col="salmon", xlab="M2 predictions")
+abline(v=covid$lncases[9], col="red", lwd=1.5)
+hist(M3PREDS[9,], lty="blank",main="", col="salmon",xlab="M3 predictions")
+abline(v=covid$lncases[9], col="red", lwd=1.5)
+hist(M4PREDS[9,], lty="blank",main="", col="salmon",xlab="M24 predictions")
+abline(v=covid$lncases[9], col="red", lwd=1.5)
+mtext("Sacramento (Group 1) predictions", side = 1, line = -33, outer = TRUE)
+
+hist(M1PREDS[4,], main="", lty="blank", col="goldenrod", xlab="M1 predictions")
+abline(v=covid$lncases[4], col="red", lwd=1.5)
+hist(M2PREDS[4,], lty="blank", main="",col="goldenrod",xlab="M2 predictions")
+abline(v=covid$lncases[4], col="red", lwd=1.5)
+hist(M3PREDS[4,], lty="blank",main="", col="goldenrod",xlab="M3 predictions")
+abline(v=covid$lncases[4], col="red", lwd=1.5)
+hist(M4PREDS[4,], lty="blank", main="",col="goldenrod",xlab="M4 predictions")
+abline(v=covid$lncases[4], col="red", lwd=1.5)
+mtext("Santa Clara (Group 2) predictions", side = 1, line = -33, outer = TRUE)
+
+hist(M1PREDS[13,], main="", lty="blank", col="palegreen2", xlab="M1 predictions")
+abline(v=covid$lncases[13], col="red", lwd=1.5)
+hist(M2PREDS[13,], lty="blank", main="",col="palegreen2",xlab="M2 predictions")
+abline(v=covid$lncases[13], col="red", lwd=1.5)
+hist(M3PREDS[13,], lty="blank",main="", col="palegreen2",xlab="M3 predictions")
+abline(v=covid$lncases[13], col="red", lwd=1.5)
+hist(M4PREDS[13,], lty="blank", main="",col="palegreen2",xlab="M4 predictions")
+abline(v=covid$lncases[13], col="red", lwd=1.5)
+mtext("Ventura (Group 3) predictions", side = 1, line = -33, outer = TRUE)
+
+hist(M1PREDS[14,], main="", lty="blank", col="cornflowerblue", xlab="M1 predictions")
+abline(v=covid$lncases[14], col="red", lwd=1.5)
+hist(M2PREDS[14,], lty="blank", main="",col="cornflowerblue",xlab="M2 predictions")
+abline(v=covid$lncases[14], col="red", lwd=1.5)
+hist(M3PREDS[14,], lty="blank",main="", col="cornflowerblue",xlab="M3 predictions")
+abline(v=covid$lncases[14], col="red", lwd=1.5)
+hist(M4PREDS[14,], lty="blank",main="", col="cornflowerblue",xlab="M4 predictions")
+abline(v=covid$lncases[14], col="red", lwd=1.5)
+mtext("San Jose (Group 4) predictions", side = 1, line = -34, outer = TRUE)
+
+hist(M1PREDS[1,],  xlim=c(5.5,9.5),main="", lty="blank", col="violet", xlab="M1 predictions")
+abline(v=covid$lncases[1], col="red", lwd=1.5)
+hist(M2PREDS[1,], main="",lty="blank", col="violet",xlab="M2 predictions")
+abline(v=covid$lncases[1], col="red", lwd=1.5)
+hist(M3PREDS[1,],  main="",lty="blank", col="violet",xlab="M3 predictions")
+abline(v=covid$lncases[1], col="red", lwd=1.5)
+hist(M4PREDS[1,], main="",lty="blank", col="violet",xlab="M4 predictions")
+abline(v=covid$lncases[1], col="red", lwd=1.5)
+mtext("Los Angeles (Group 5) predictions", side = 1, line = -33, outer = TRUE)
+
+hist(M1PREDS[2,], main="", lty="blank", col="violet", xlab="M1 predictions")
+abline(v=covid$lncases[2], col="red", lwd=1.5)
+hist(M2PREDS[2,],  main="",lty="blank", col="violet",xlab="M2 predictions")
+abline(v=covid$lncases[2], col="red", lwd=1.5)
+hist(M3PREDS[2,], main="",lty="blank", col="violet",xlab="M3 predictions")
+abline(v=covid$lncases[2], col="red", lwd=1.5)
+hist(M4PREDS[2,], main="",lty="blank", col="violet",xlab="M4 predictions")
+abline(v=covid$lncases[2], col="red", lwd=1.5)
+mtext("San Diego (Group 5) predictions", side = 1, line = -33, outer = TRUE)
+```
+
+
+###############################################################################################
+MODEL COMPARISON
+
+
+4. Compare the different models using justifiable criteria. Can you use g-priors?
+
+R-SQUARED VALUES
+
+```{r}
+#MODEL 1
+Y_1_hat=w1 %*% betahat1 # Compute Y estimates
+res1=z1-Y_1_hat # Compute residuals
+SSE1=t(res1) %*% res1 #119907.8
+#s1=z1-mean(z1)
+s1 = z1 - Y_1_hat
+SST1=t(s1) %*% s1
+
+sigmahat1=SSE1/(n1-k1) #2103.646
+r2_1=1-SSE1/SST1 #0
+
+#MODEL 2
+Y_2_hat=w2 %*% betahat2 # Compute Y estimates
+res2=z2-Y_2_hat # Compute residuals
+SSE2=t(res2) %*% res2 #
+s2=z2-Y_2_hat
+#SST2=t(s2) %*% s2  #
+sigmahat2=SSE2/(n2-k2) #
+r2_2=1-SSE2/SST1 #
+#MODEL 3
+Y_3_hat=w3 %*% betahat3 # Compute Y estimates
+res3=z3-Y_3_hat # Compute residuals
+SSE3=t(res3) %*% res3 #
+s3=z3-Y_3_hat
+SST3=t(s3) %*% s3  #
+sigmahat3=SSE3/(n3-k3) #
+r2_3=1-SSE3/SST1 # 
+#MODEL 4
+Y_4_hat=w4 %*% betahat4 # Compute Y estimates
+res4=z4-Y_4_hat # Compute residuals
+SSE4=t(res4) %*% res4 #
+s4=z4-Y_4_hat
+SST4=t(s4) %*% s4
+sigmahat4=SSE4/(n4-k4) #
+r2_4=1-SSE4/SST1 #
+
+round(c(r2_1 ,r2_2,r2_3,r2_4),3)
+```
+
+AIC BIC 
+```{r}
+#https://statswithr.github.io/book/bayesian-model-choice.html
+bic1=n1*log(1-r2_1)+(k1+1)*log(n1)
+bic2=n2*log(1-r2_2)+(k2+1)*log(n2)
+bic3=n3*log(1-r2_3)+(k3+1)*log(n3)
+bic4=n4*log(1-r2_4)+(k4+1)*log(n4)
+round(c(bic1,bic2,bic3,bic4),1)
+
+aic1=n1*log(1-r2_1)+(k1+1)*2
+aic2=n2*log(1-r2_2)+(k2+1)*2
+aic3=n3*log(1-r2_3)+(k3+1)*2
+aic4=n4*log(1-r2_4)+(k4+1)*2
+round(c(aic1,aic2,aic3,aic4),1)
+```
+
+
+
+
+```{r}
+#deviance function, log likelihood (density) 
+devi=function(beta,sigm,w){
+  -2*sum(dnorm(z1,w%*%beta,sigm, log=TRUE))
+}
+
+big_bar_d1=mean(sapply(1:niter,function(it)devi(beta1[it,],sigma1[it],w1))) #bar_d
+small_bar_d1=devi(colMeans(beta1),sqrt(mean(sigma1^2)),w1) #d_bar
+#pd1=big_bar_d1-small_bar_d1
+#DIC1=pd1+big_bar_d1
+
+#version 2, no neg
+d1=sapply(1:niter,function(it)devi(beta1[it,],sigma1[it],w1))
+pv1=var(d1)/2
+DIC1=pv1+big_bar_d1
+
+big_bar_d2=mean(sapply(1:niter,function(it)devi(beta2[it,],sigma2[it],w2))) #bar_d
+small_bar_d2=devi(colMeans(beta2),sqrt(mean(sigma2^2)),w2) #d_bar
+
+d2=sapply(1:niter,function(it)devi(beta2[it,],sigma2[it],w2))
+pv2=var(d2)/2
+DIC2=pv2+big_bar_d2
+
+big_bar_d3=mean(sapply(1:niter,function(it)devi(beta3[it,],sigma3[it],w3))) #bar_d
+small_bar_d3=devi(colMeans(beta3),sqrt(mean(sigma3^2)),w3) #d_bar
+
+d3=sapply(1:niter,function(it)devi(beta3[it,],sigma3[it],w3))
+pv3=var(d3)/2
+DIC3=pv3+big_bar_d3
+
+big_bar_d4=mean(sapply(1:niter,function(it)devi(beta4[it,],sigma4[it],w4))) #bar_d
+small_bar_d4=devi(colMeans(beta4),sqrt(mean(sigma4^2)),w1) #d_bar
+
+d4=sapply(1:niter,function(it)devi(beta4[it,],sigma4[it],w4))
+pv4=var(d4)/2
+DIC4=pv2+big_bar_d4
+
+round(c(DIC1,DIC2,DIC3,DIC4),1)
+```
+
+
+F-TEST
+
+```{r}
+#F-test comparing models 2 vs 4 and 3 vs 4
+threshold=qf(.95, k4-k2,n4-k4) #2.549763
+f.test.stat=(SSE2-SSE4)/
+  (sigmahat4*(k4-k2)) #16.26948
+c(threshold,f.test.stat)
+f.test.stat > threshold
+threshold=qf(.95, k4-k3,n4-k4) #4.026631
+f.test.stat=(SSE3-SSE4)/
+  (sigmahat4*(k4-k3))#44.19527
+c(threshold,f.test.stat)
+f.test.stat > threshold
+```
+
+5. Based on the results from your analysis, are there other models, involving the proposed grouping and the population density, worth considering?
+
+LASSO
+```{r}
+iter=1000
+llars=lars(w4, z4, type="lasso")
+cv=lars::cv.lars( w4, z4 ,plot.it=TRUE, se=TRUE)
+gnet=cv.glmnet(w4, z4, standardize=TRUE, alpha=1, nfold=10 )
+gnet #min lambda estimate from output
+
+# define the burn-in period and initial values 
+burnin = 500
+initial.beta=rep(-50, dim(w4)[2]) # assigning an extreme initial value for all betas
+initial.lambda2=gnet$lambda.min # assigning an extreme initial value for lambda (penalty parameter)
+initial.variance=500 # assigning an extreme initial value for variance parameter
+
+# starting the Gibbs sampler here
+lasso=blasso(X = w4, # covariate matrix with dimensions 442 x 64
+                y = z4,  # response vector with length of 442
+                T = niter, # number of iterations
+                beta = initial.beta, 
+                lambda2 = initial.lambda2,  
+                s2 = initial.variance)
+
+# collecting draws for some of the parameters for visualization
+coef.lasso=as.data.frame(cbind(iter = seq(iter), 
+                              beta1 = lasso$beta[, "b.1"], beta2 = lasso$beta[, "b.2"], 
+                              beta3 = lasso$beta[, "b.3"],beta4 = lasso$beta[, "b.4"], 
+                              beta5 = lasso$beta[, "b.5"],beta6 = lasso$beta[, "b.6"],
+                              variance = lasso$s2, stdev=sqrt(lasso$s2),
+                              lambda.square = lasso$lambda2))
+colMedians(coef.lasso[-seq(burnin), -1])
+#colMedians(lasso$beta[-seq(burnin), -1])
+#sum(colMedians(lasso$beta[-seq(burnin), ]) == 0)
+```
+
+```{r}
+#Predict using the non zero coefficients from lasso
+model5=function(i,j,it){
+  if(j==1){
+    eta1=1
+    eta2=0
+    eta3=0
+    eta4=0}
+    if(j==2){
+    eta1=0
+    eta2=1
+    eta3=0
+    eta4=0}
+    if(j==3){
+    eta1=0
+    eta2=0
+    eta3=1
+    eta4=0}  
+    if(j==4){
+    eta1=0
+    eta2=0
+    eta3=0
+    eta4=1}
+    if(j==5){
+    eta1=-1
+    eta2=-1
+    eta3=-1
+    eta4=-1}
+    yij=coef.lasso[-seq(burnin), -1][it,1]+ coef.lasso[-seq(burnin), -1][it,2]*eta1+ 0*eta2+ 0*eta3+0*eta4+ 
+     coef.lasso[-seq(burnin), -1][it,6]*covid$ldensity[i]+
+      rnorm(1,0,sqrt(coef.lasso[it,"variance"]*1000/covid$Population[i]))
+  return(yij)}
+
+SAC_m5=model5(9,1,niter)
+SCL_m5=model5(4,2,niter)
+VEN_m5=model5(13,3,niter)
+SJ_m5=model5(14,4,niter)
+LA_m5=model5(1,5,niter)
+m5logpreds=round(c(SAC_m5,SCL_m5,VEN_m5,SJ_m5,LA_m5),2)
+m5preds=as.integer(exp(c(SAC_m5,SCL_m5,VEN_m5,SJ_m5,LA_m5)))
+
+tm5=as.data.frame(cbind(c("SAC", "SCL","VEN", "SJ","LA"),actuallog,m5logpreds,actual,m5preds))
+tm5 %>% kable(col.names = c("County","Log total cases", "M5 prediction (log)","Total cases", "M4 prediction"))%>% kable_styling(position="center",bootstrap_options = c("striped"), latex_options = "hold_position")
+
+#Simulations
+M5PREDS=matrix(NA, 58, niter)
+for(i in 1:niter){
+  for(j in 1:58){
+  M5PREDS[j,i]=model5(j,covid$Group[j],i)}}
+```
+
+
+
+
+
+```{r}
+#LASSO PLOTS
+par(mfrow=c(1,5), las=2)
+hist(M5PREDS[9,], lty="blank",main="", col="indianred2",xlab="Sacramento")
+abline(v=covid$lncases[9], col="red", lwd=1.5)
+hist(M5PREDS[4,], lty="blank", main="",col="gold",xlab="Santa Clara")
+abline(v=covid$lncases[4], col="red", lwd=1.5)
+hist(M5PREDS[13,], lty="blank", main="",col="seagreen2",xlab="Ventura")
+abline(v=covid$lncases[13], col="red", lwd=1.5)
+hist(M5PREDS[14,], lty="blank",main="", col="lightblue",xlab="San Jose")
+abline(v=covid$lncases[14], col="red", lwd=1.5)
+hist(M5PREDS[1,], main="",lty="blank", col="mediumpurple",xlab="Los Angeles")
+abline(v=covid$lncases[1], col="red", lwd=1.5)
+```
+
+
+
+
+G PRIORS AND BAYES FACTOR
+
+####################################################################################
+
+
+BAYES FACTORS
+#A Bayes factor greater than 1 can be interpereted as evidence against the compared-to model (the denominator).
+```{r}
+n=58
+
+g=0.1
+BF21=(1+g)^((n-k2-1)/2)/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+g0.1.null=c(round(BF21,2), round(BF31,2),round(BF41,2))
+g0.1=c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+g=1
+BF21=(1+g)^((n-k2-1)/2)/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+g1.null=c(round(BF21,2), round(BF31,2),round(BF41,2))
+g1=c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+g=10
+BF21=(1+g)^((n-k2-1)/2)/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+g10.null=c(round(BF21,2), round(BF31,2),round(BF41,2))
+g10=c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+
+g=100
+BF21=((1+g)^((n-k2-1)/2))/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+g100.null=c(round(BF21,2), round(BF31,2),round(BF41,2))
+g100=c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+
+g=1000
+BF21=((1+g)^((n-k2-1)/2))/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+g1000.null=c(round(BF21,2), round(BF31,2),round(BF41,2))
+g1000=c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+
+g0.1.null
+g1.null
+g10.null
+g100.null
+g1000.null
+g0.1
+g1
+g10
+g100
+g1000
+
+g=10000000000000000
+BF21=((1+g)^((n-k2-1)/2))/(1+g*(1-r2_2))^((n-1)/2)#comparing M2 against M1(null) 
+BF31=(1+g)^((n-k3-1)/2)/(1+g*(1-r2_3))^((n-1)/2) # comparing M3 against M1(null)   
+BF41=(1+g)^((n-k4-1)/2)/(1+g*(1-r2_4))^((n-1)/2) # comparing M4 against M1(null)  
+BF23=BF21/BF31# comparing M2 against M3
+BF24=BF21/BF41# comparing M2 against M4 
+BF34=BF31/BF41# comparing M3 against M4
+
+
+c(round(BF23,2),round(BF24,2),round(BF34,2))
+
+
+0.1/(1+0.1)
+1/(1+1)
+10/(1+10)
+100/(100+1)
+```
