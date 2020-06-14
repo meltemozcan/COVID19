@@ -1,2 +1,2 @@
 COVID19
-Includes data set, code, and final report for a project predicting COVID-19 deaths in CA using Bayesian models
+Includes datasets, code, and reports for a project predicting the total number of COVID-19 cases and COVID-19 related deaths in California using Bayesian models
